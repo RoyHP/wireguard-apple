@@ -454,6 +454,7 @@ public class WireGuardAdapter {
                 )
             } catch {
                 self.logHandler(.error, "Failed to restart backend: \(error.localizedDescription)")
+                self.scheduleTemporaryShutdownRecovery()
             }
 
         case .stopped:
@@ -464,6 +465,27 @@ public class WireGuardAdapter {
         #error("Unsupported")
         #endif
     }
+
+    #if os(iOS) || os(tvOS)
+    /// Retry resuming from `temporaryShutdown` shortly after a failed
+    /// resume. Without this, a single failed resume (e.g. a
+    /// setNetworkSettings error during rapid Wi-Fi/cellular flapping)
+    /// leaves the backend off until the *next* path change — which may
+    /// never arrive — while the system keeps routing all traffic into
+    /// the dead tunnel. Retries every 5 seconds for as long as the
+    /// adapter remains in `temporaryShutdown` with a satisfiable path.
+    private func scheduleTemporaryShutdownRecovery() {
+        workQueue.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self = self else { return }
+            guard case .temporaryShutdown = self.state else { return }
+            guard let currentPath = self.networkMonitor?.currentPath,
+                  currentPath.status.isSatisfiable else { return }
+
+            self.logHandler(.verbose, "Retrying backend restart after failed resume.")
+            self.didReceivePathUpdate(path: currentPath)
+        }
+    }
+    #endif
 }
 
 /// A enum describing WireGuard log levels defined in `api-apple.go`.
